@@ -32,6 +32,81 @@ flowchart TD
 - **Database Logging**: All responses and judgments are logged to SQLite
 - **JSON Export**: Option to save full results to JSON file
 
+## How It Works
+
+### Architecture
+
+This tool uses concurrent execution to efficiently evaluate LLM responses:
+
+1. **Initial Responses**: All models answer the question in parallel
+2. **Cross-Evaluation**: Each response is then judged by all other models in parallel
+3. **Result Aggregation**: All responses and judgments are collected and displayed
+
+### Execution Flow
+
+For a panel of N models, the tool will:
+1. Make N parallel API calls to get initial answers
+2. For each answer, make (N-1) parallel API calls to get judgments
+3. Total API calls = N + N*(N-1) = N^2
+
+For example, with 7 default models:
+- 7 initial response calls
+- 7 * 6 = 42 judgment calls
+- Total: 49 API calls
+
+### Configuration
+
+The tool can be configured with several options:
+
+```bash
+# Basic usage with default settings
+llm judge "What is the capital of France?"
+
+# Custom model selection
+llm judge -m "openrouter/openai/gpt-4" -m "openrouter/anthropic/claude-3" "Your question"
+
+# Advanced configuration
+llm judge \
+  --max-workers 10 \     # Number of concurrent API calls (default: 10)
+  --max-retries 2 \      # Retries for failed API calls (default: 1)
+  --output results.json \ # Save results to file
+  "Your question"
+```
+
+### Default Models
+
+This will use the following default models:
+- GPT-4o (OpenAI's latest flagship via OpenRouter)
+- Claude 3.5 Sonnet (Anthropic's best)
+- Gemini 2.0 Flash (Google's best)
+- Hermes 3 405B (Nous Research's largest open source model)
+- Grok 2 (X.AI's latest model)
+- DeepSeek Chat (DeepSeek's flagship model)
+- Mistral Large (Mistral AI's strongest model)
+
+### Error Handling
+
+The tool implements robust error handling:
+- Automatic retries with exponential backoff
+- Skips failed responses/judgments gracefully
+- Continues execution even if some models fail
+- Detailed logging of all errors and retries
+
+### Performance
+
+- Uses ThreadPoolExecutor for concurrent API calls
+- Default max_workers=10 for optimal throughput
+- Configurable retry mechanism for reliability
+- Exponential backoff to handle rate limits
+
+### Database Logging
+
+All responses and judgments are automatically logged to SQLite:
+- Responses table: Stores each model's answer
+- Judgments table: Stores cross-evaluation results
+- Timestamps for tracking execution flow
+- Unique IDs for response-judgment correlation
+
 ## Setup
 
 ### API Keys
@@ -67,15 +142,6 @@ Simple question with default models:
 ```bash
 llm judge "What is the capital of France?"
 ```
-
-This will use the following default models:
-- GPT-4o (OpenAI's latest flagship via OpenRouter)
-- Claude 3.5 Sonnet (Anthropic's best)
-- Gemini 2.0 Flash (Google's best)
-- Hermes 3 405B (Nous Research's largest open source model)
-- Grok 2 (X.AI's latest model)
-- DeepSeek Chat (DeepSeek's flagship model)
-- Mistral Large (Mistral AI's strongest model)
 
 ### Advanced Usage
 

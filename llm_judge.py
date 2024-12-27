@@ -1,7 +1,7 @@
 import click
 import llm
 import json
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any, Callable, Tuple
 import logging
 import sys
 import os
@@ -9,7 +9,8 @@ import pathlib
 import sqlite_utils
 from datetime import datetime
 import time
-from typing import Any, Callable
+import concurrent.futures
+from functools import partial
 
 def user_dir() -> pathlib.Path:
     """Get or create user directory for storing application data."""
@@ -101,10 +102,11 @@ class DatabaseConnection:
         return cls._instance.db
 
 class JudgeOrchestrator:
-    def __init__(self, models: List[str], max_retries: int = 1):
+    def __init__(self, models: List[str], max_retries: int = 1, max_workers: int = 10):
         self.models = models
         self.db = DatabaseConnection.get_connection()
         self.max_retries = max_retries
+        self.max_workers = max_workers
     
     def _retry_model_call(self, func: Callable, *args, **kwargs) -> Any:
         """Helper to retry model calls with exponential backoff."""
@@ -220,37 +222,50 @@ Response to evaluate:
                 "timestamp": datetime.now().isoformat()
             }
 
+    def _get_all_answers(self, prompt: str) -> List[Dict]:
+        """Get answers from all models concurrently."""
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = [
+                executor.submit(self.get_answer, model, prompt)
+                for model in self.models
+            ]
+            answers = []
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    result = future.result()
+                    if not result["response"].startswith("Error:"):
+                        answers.append(result)
+                except Exception as e:
+                    logger.error(f"Failed to get response: {e}")
+            return answers
+
+    def _get_all_judgments(self, answer: Dict, judge_models: List[str]) -> List[Dict]:
+        """Get judgments for a response concurrently."""
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = [
+                executor.submit(self.judge_response, judge_model, answer)
+                for judge_model in judge_models
+                if judge_model != answer["model"]  # Don't let models judge themselves
+            ]
+            judgments = []
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    result = future.result()
+                    if not result.get("explanation", "").startswith("Error:"):
+                        judgments.append(result)
+                except Exception as e:
+                    logger.error(f"Failed to get judgment: {e}")
+            return judgments
+
     def orchestrate(self, prompt: str) -> Dict:
         """Get answers from all models and have them judge each other."""
-        # Get answers from all models
-        answers = []
-        for model in self.models:
-            try:
-                answer = self.get_answer(model, prompt)
-                if not answer["response"].startswith("Error:"):
-                    answers.append(answer)
-                else:
-                    logger.warning(f"Skipping failed response from {model}: {answer['response']}")
-            except Exception as e:
-                logger.error(f"Failed to get response from {model}: {e}")
-                continue
+        # Get answers from all models concurrently
+        answers = self._get_all_answers(prompt)
         
-        # Have each model judge other models' responses
+        # Have each model judge other models' responses concurrently
         judgments = []
         for answer in answers:
-            response_judgments = []
-            for judge_model in self.models:
-                if judge_model != answer["model"]:  # Don't let models judge themselves
-                    try:
-                        judgment = self.judge_response(judge_model, answer)
-                        if not judgment.get("explanation", "").startswith("Error:"):
-                            response_judgments.append(judgment)
-                        else:
-                            logger.warning(f"Skipping failed judgment from {judge_model}: {judgment['explanation']}")
-                    except Exception as e:
-                        logger.error(f"Failed to get judgment from {judge_model}: {e}")
-                        continue
-            
+            response_judgments = self._get_all_judgments(answer, self.models)
             if response_judgments:  # Only include responses that got at least one judgment
                 judgments.append({
                     "model": answer["model"],
@@ -285,7 +300,14 @@ def register_commands(cli):
         default=1,
         help="Maximum number of retries for model calls",
     )
-    def judge(prompt: str, models: Optional[List[str]] = None, output: Optional[str] = None, max_retries: int = 1):
+    @click.option(
+        "--max-workers",
+        type=int,
+        default=4,
+        help="Maximum number of concurrent API calls",
+    )
+    def judge(prompt: str, models: Optional[List[str]] = None, output: Optional[str] = None, 
+              max_retries: int = 1, max_workers: int = 4):
         """Have LLMs answer a question and judge each other's responses."""
         if not models:
             models = [
@@ -299,7 +321,7 @@ def register_commands(cli):
             ]
         
         # Create and run the orchestrator
-        orchestrator = JudgeOrchestrator(list(models), max_retries=max_retries)
+        orchestrator = JudgeOrchestrator(list(models), max_retries=max_retries, max_workers=max_workers)
         results = orchestrator.orchestrate(prompt)
         
         # Save full results if requested
