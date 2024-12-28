@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 import click
 import llm
 import sqlite_utils
+from tabulate import tabulate
 
 # Configuration
 CONFIG = {
@@ -26,7 +27,7 @@ CONFIG = {
     'DEFAULT_MODELS': [
         "openrouter/openai/gpt-4o-2024-11-20",
         "openrouter/anthropic/claude-3.5-sonnet:beta",
-        "openrouter/google/gemini-2.0-flash-exp:free",
+        "openrouter/google/gemini-pro-1.5-exp",
         "openrouter/nousresearch/hermes-3-llama-3.1-405b",
         "openrouter/x-ai/grok-2-1212",
         "openrouter/deepseek/deepseek-chat",
@@ -292,14 +293,25 @@ class JudgeOrchestrator:
         # Initialize empty judgment lists for each model
         for answer in answers:
             judgments_by_model[answer["model"]] = []
+            # If this answer failed, add error judgments from all other models without judging
+            if is_error_response(answer):
+                error_msg = get_error_message(answer)
+                for judge_model in self.models:
+                    if judge_model != answer["model"]:
+                        judgments_by_model[answer["model"]].append({
+                            "judge_model": judge_model,
+                            "score": None,
+                            "explanation": f"Error: {error_msg}"
+                        })
+                continue  # Skip to next answer, don't try to judge this one
 
         # Have each model judge all other models' responses
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = []
             for judge_model in self.models:
                 for answer in answers:
-                    # Skip self-judgment
-                    if answer["model"] == judge_model:
+                    # Skip self-judgment and failed answers
+                    if answer["model"] == judge_model or is_error_response(answer):
                         continue
 
                     # Submit judgment task
@@ -363,7 +375,7 @@ class JudgeOrchestrator:
                 "model": model,
                 "scores": [],
                 "judgments": judgments.get(model, []),
-                "num_judgments": len(judgments.get(model, [])),
+                "num_judgments": len([j for j in judgments.get(model, []) if j["score"] is not None]),  # Only count successful judgments
                 "avg_score": 0,
                 "min_score": None,
                 "max_score": None
@@ -390,7 +402,24 @@ class JudgeOrchestrator:
 
 def get_answer(model: str, prompt: str, max_retries: int,
               initial_delay: float, retry_multiplier: float, max_delay: float) -> Dict:
-    """Get an answer from a specific model."""
+    """Get an answer from a model with retries."""
+    try:
+        response = _get_model_response(model, prompt, max_retries, initial_delay, retry_multiplier, max_delay)
+        return {
+            "model": model,
+            "response": response
+        }
+    except Exception as e:
+        logger.error(f"Failed to get response from {model}: {str(e)}")
+        return {
+            "model": model,
+            "response": f"Error: {str(e)}",
+            "error": str(e)
+        }
+
+def _get_model_response(model: str, prompt: str, max_retries: int,
+                       initial_delay: float, retry_multiplier: float, max_delay: float) -> Dict:
+    """Get a response from a model."""
     @with_retries(max_retries=max_retries, initial_delay=initial_delay, retry_multiplier=retry_multiplier, max_delay=max_delay)
     def _get_model_response(model: str, prompt: str) -> Dict:
         model_instance = llm.get_model(model)
@@ -409,17 +438,16 @@ def get_answer(model: str, prompt: str, max_retries: int,
 
         return response_dict
 
-    try:
-        return _get_model_response(model, prompt)
-    except Exception as e:
-        return create_timestamped_dict("response",model=model,prompt=prompt,response=f"Error: {str(e)}")
+    return _get_model_response(model, prompt)
 
 def judge_response(judge_model: str, judge_prompt:str, response: Dict, max_retries: int,
                   initial_delay: float, retry_multiplier: float, max_delay: float) -> Dict:
     """Have one model judge another model's response."""
     @with_retries(max_retries=max_retries, initial_delay=initial_delay, retry_multiplier=retry_multiplier, max_delay=max_delay)
     def _get_judgment(judge_model: str, judge_prompt: str, response: Dict) -> Dict:
-        judge_prompt = f"{judge_prompt}\n\nQuestion:\n{response['prompt']}\n\nAnswer:\n{response['response']}"
+        # Extract just the response text from the metadata dictionary
+        response_text = response["response"]["response"] if isinstance(response["response"], dict) else response["response"]
+        judge_prompt = f"{judge_prompt}\n\nResponse to judge:\n{response_text}"
 
         try:
             model_instance = llm.get_model(judge_model)
@@ -429,12 +457,11 @@ def judge_response(judge_model: str, judge_prompt:str, response: Dict, max_retri
             # Parse judgment components
             components = parse_judgment(judgment_text, judge_model)
 
-            # Create judgment dictionary
-            judgment_dict = create_timestamped_dict("judgment",
-                response_id=response["id"],
-                judge_model=judge_model,
+            # Create judgment dictionary with generated ID
+            judgment_dict = {
+                "judge_model": judge_model,
                 **components
-            )
+            }
 
             # Log to database
             db = DatabaseConnection.get_connection()
@@ -468,6 +495,26 @@ def judge_response(judge_model: str, judge_prompt:str, response: Dict, max_retri
         db = DatabaseConnection.get_connection()
         db["judgments"].insert(error_judgment)
         return error_judgment
+
+def is_error_response(answer: Dict) -> bool:
+    """Check if an answer represents an error response."""
+    return (
+        "error" in answer or
+        (isinstance(answer.get("response"), str) and answer["response"].startswith("Error:")) or
+        (isinstance(answer, dict) and isinstance(answer.get("response"), dict) and
+         isinstance(answer["response"].get("response"), str) and
+         answer["response"]["response"].startswith("Error:"))
+    )
+
+def get_error_message(answer: Dict) -> str:
+    """Extract error message from an answer."""
+    if "error" in answer:
+        return answer["error"]
+    elif isinstance(answer.get("response"), str) and answer["response"].startswith("Error:"):
+        return answer["response"].split("Error: ", 1)[1]
+    elif isinstance(answer, dict) and isinstance(answer.get("response"), dict):
+        return answer["response"]["response"].split("Error: ", 1)[1]
+    return "Unknown error"
 
 @llm.hookimpl
 def register_commands(cli):
@@ -525,10 +572,11 @@ def register_commands(cli):
         # Display results
         click.echo("\nResults:\n")
         for result in results["answers"]:
+            click.echo("\n=== Answer ===")
             click.echo(f"\nModel: {result['model']}")
             click.echo("Response:")
             click.echo(result["response"])
-            click.echo("\n=== Judgments: ===")
+            click.echo("\n=== Scores ===")
             for judgment in result["judgments"]:
                 click.echo(f"\n  Judge: {judgment['judge_model']}")
                 click.echo(f"  Score: {judgment['score']}")
@@ -562,3 +610,27 @@ def register_commands(cli):
                     "N/A",
                     0
                 ))
+
+        # Display score matrix
+        click.echo("\nScore Matrix (rows: judges, columns: judged):\n")
+
+        models = [m["model"] for m in sorted_summary]
+        model_to_rank = {m: i+1 for i, m in enumerate(models)}
+
+        # Create matrix data
+        headers = ["J\\J"] + list(range(1, len(models) + 1))
+        matrix = []
+        for judge in models:
+            row = [model_to_rank[judge]]
+            for judged in models:
+                if judge == judged:
+                    score = "-"  # Models don't judge themselves
+                else:
+                    # Find the judgment
+                    judgment = next((j for j in next(r["judgments"] for r in results["answers"] if r["model"] == judged)
+                                  if j["judge_model"] == judge), None)
+                    score = judgment["score"] if judgment and judgment.get("score") is not None else "E"
+                row.append(score)
+            matrix.append(row)
+
+        click.echo(tabulate(matrix, headers=headers, tablefmt="simple"))

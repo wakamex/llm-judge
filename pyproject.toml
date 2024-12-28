@@ -10,9 +10,10 @@ classifiers = [
 ]
 requires-python = ">=3.9"
 dependencies = [
-    "llm",
     "click",
+    "llm",
     "sqlite-utils",
+    "tabulate",
     "asyncio"
 ]
 

@@ -1,89 +1,92 @@
 # LLM Judge
 
-A plugin for [LLM](https://llm.datasette.io/) that enables multiple language models to evaluate each other's responses.
+A tool for comparing responses from different LLM models. Each model judges the responses from other models, providing scores and explanations.
 
-inspired by [llm-consortium](https://github.com/irthomasthomas/llm-consortium), with the following differences:
-- single-pass evaluation vs. iterative refinement
-- peer-to-peer judging vs. arbiter-based synthesis
-- absolute score vs. confidence-based approach
-- default judgement based on accuracy vs. bias
-
-## Core Algorithm Flow
-
-```mermaid
-flowchart TD
-    A[Start] --> B[ThreadPool]
-    B ==> C[Concurrent Responses]
-    C --> |Each Response| D[Launch Judgments]
-    D -.->|Feed Back|C
-    D ==> E[Results]
-    
-    style B fill:#f9f,stroke:#333
-    style C fill:#bbf,stroke:#333
-    style D fill:#bbf,stroke:#333
-```
+A plugin for [LLM](https://llm.datasette.io/) inspired by [llm-consortium](https://github.com/irthomasthomas/llm-consortium).
 
 ## Features
 
-- **Multi-Model Evaluation**: Each model answers the question and judges other models' responses
-- **Objective Scoring**: Clear -100 to 100 scoring system where:
-  - 100: Maximum accuracy and helpfulness
-  - 0: Significant bias or inaccuracy
-  - -100: Failure or refusal to answer
-- **Detailed Analysis**: Each judgment includes:
-  - Numerical score
-  - Detailed analysis of strengths/weaknesses
-  - Brief explanation of the score
-- **Database Logging**: All responses and judgments are logged to SQLite
-- **JSON Export**: Option to save full results to JSON file
+- Compare responses from multiple LLM models
+- Models judge each other's responses
+- Provides scores and explanations for each judgment
+- Generates performance summaries and score matrices
+- Saves results to SQLite database
 
-## How It Works
+## Installation
 
-### Architecture
-
-This tool uses thread-based concurrency to efficiently evaluate LLM responses:
-
-1. **Initial Responses**: All models answer the question concurrently using a thread pool
-2. **Cross-Evaluation**: Each response is then judged by all other models concurrently
-3. **Result Aggregation**: All responses and judgments are collected and displayed
-
-### Execution Flow
-
-For a panel of N models, the tool will:
-1. Make N concurrent API calls to get initial answers using ThreadPoolExecutor
-2. For each answer, make (N-1) concurrent API calls to get judgments
-3. Total API calls = N + N*(N-1) = N^2
-
-For example, with 7 default models:
-- 7 initial response calls
-- 7 * 6 = 42 judgment calls
-- Total: 49 API calls
-
-### Configuration
-
-The tool can be configured with several options:
+Install this plugin in the same environment as [LLM](https://llm.datasette.io/).
 
 ```bash
-# Basic usage with default settings
-llm judge "What is the capital of France?"
-
-# Custom model selection
-llm judge -m "openrouter/openai/gpt-4" -m "openrouter/anthropic/claude-3" "Your question"
-
-# Advanced configuration
-llm judge \
-  --max-workers 10 \     # Number of concurrent API calls (default: 10)
-  --max-retries 2 \      # Retries for failed API calls (default: 1)
-  --output results.json \ # Save results to file
-  "Your question"
+pip install llm-judge
 ```
+
+## Usage
+
+Basic usage:
+```bash
+llm judge "What is 2+2?"
+```
+
+Add `-v` for verbose output:
+```bash
+llm judge -v "What is quantum computing?"
+```
+
+Specify multiple models:
+```bash
+llm judge -v "Why is the CCP bad?" -m openrouter/openai/gpt-4o-2024-11-20 -m openrouter/anthropic/claude-3.5-sonnet:beta -m openrouter/google/gemini-2.0-flash-exp:free
+```
+
+Save results to JSON:
+```bash
+llm judge "What is 2+2?" --output results.json
+```
+
+### Output Format
+
+The tool provides:
+1. Each model's response to the prompt
+2. Scores and explanations from other models judging the response
+3. A performance summary showing average, min, and max scores
+4. A score matrix showing how models judged each other
+
+Example output:
+```
+=== Answer ===
+Model: model-1
+Response: [Response text]
+
+=== Scores ===
+  Judge: model-2
+  Score: 95
+  Explanation: [Explanation of score]
+
+Performance Summary:
+Rank  Model        Average  Min  Max  # Judgments
+------------------------------------------------
+1     model-1      95.00    95   95   1
+2     model-2      85.00    85   85   1
+
+Score Matrix (rows: judges, columns: judged):
+  J\J  1    2
+-----  ---  ---
+    1  -    85
+    2  95   -
+```
+
+### Database Access
+
+Results are stored in an SQLite database for later analysis. The database contains:
+- Responses from each model
+- Judgments and scores
+- Timestamps for tracking
 
 ### Default Models
 
 This will use the following default models:
 - GPT-4o (OpenAI's latest flagship via OpenRouter)
 - Claude 3.5 Sonnet (Anthropic's best)
-- Gemini 2.0 Flash (Google's best)
+- Gemini 1.5 Pro (Google's best production model (not rate-limited))
 - Hermes 3 405B (Nous Research's largest open source model)
 - Grok 2 (X.AI's latest model)
 - DeepSeek Chat (DeepSeek's flagship model)
@@ -104,116 +107,7 @@ The tool implements robust error handling:
 - Configurable retry mechanism for reliability
 - Exponential backoff to handle rate limits
 
-### Database Logging
-
-All responses and judgments are automatically logged to SQLite:
-- Responses table: Stores each model's answer
-- Judgments table: Stores cross-evaluation results
-- Timestamps for tracking execution flow
-- Unique IDs for response-judgment correlation
-
-## Setup
-
-### API Keys
-
-This tool requires an OpenRouter API key to access the models. You can get one from [OpenRouter](https://openrouter.ai/).
-
-Set up your API key in one of these ways:
-
-1. Environment variable:
-```bash
-export LLM_OPENROUTER_KEY=your_key_here
-```
-
-2. Using llm configuration:
-```bash
-llm keys set openrouter
-# Then paste your key when prompted
-```
-
-## Installation
-
-Install this plugin in the same environment as [LLM](https://llm.datasette.io/).
-
-```bash
-llm install llm-judge
-```
-
-## Usage
-
-### Basic Usage
-
-Simple question with default models:
-```bash
-llm judge "What is the capital of France?"
-```
-
-### Advanced Usage
-
-Specify multiple models:
-```bash
-llm judge "Explain quantum entanglement" \
-  -m gpt-4 \
-  -m claude-3-opus-20240229 \
-  -m claude-3-sonnet-20240229 \
-  -m gemini-pro
-```
-
-Save results to JSON:
-```bash
-llm judge "Compare Python and JavaScript" --output results.json
-```
-
-### Response Structure
-
-Each model's judgment follows this structure:
-
-```xml
-<analysis>
-[Detailed analysis of the response's strengths and weaknesses]
-</analysis>
-
-<score>
-[Score from -100 to 100]
-</score>
-
-<explanation>
-[Brief explanation of the score]
-</explanation>
-```
-
-### Database Access
-
-Responses and judgments are stored in SQLite at `~/.llm/judge_logs.db`:
-- `responses` table: Stores all model responses
-- `judgments` table: Stores all peer judgments
-
-### Programmatic Usage
-
-```python
-from llm_judge import JudgeOrchestrator
-
-# Initialize orchestrator
-orchestrator = JudgeOrchestrator(
-    models=["gpt-4", "claude-3-opus-20240229"]
-)
-
-# Run evaluation
-results = await orchestrator.orchestrate("Your prompt")
-
-# Access results
-for result in results["results"]:
-    print(f"\nModel: {result['model']}")
-    print(f"Response: {result['response']}")
-    
-    for judgment in result["judgments"]:
-        print(f"\nJudge: {judgment['judge_model']}")
-        print(f"Score: {judgment['score']}")
-        print(f"Analysis: {judgment['analysis']}")
-        print(f"Explanation: {judgment['explanation']}")
-```
-
-## Development
+### Development
 
 To set up this plugin locally, first checkout the code. Then create a new virtual environment:
 ```bash
@@ -223,7 +117,7 @@ source venv/bin/activate
 ```
 Now install the dependencies and test dependencies:
 ```bash
-llm install -e '.[test]'
+pip install -e '.[test]'
 ```
 To run the tests:
 ```bash
