@@ -12,10 +12,15 @@ inspired by [llm-consortium](https://github.com/irthomasthomas/llm-consortium), 
 
 ```mermaid
 flowchart TD
-    A[Start] --> B[Get Model Responses]
-    B --> C[Models Judge Each Other]
-    C --> D[Collect Scores & Analysis]
-    D --> E[Output Results]
+    A[Start] --> B[ThreadPool]
+    B ==> C[Concurrent Responses]
+    C --> |Each Response| D[Launch Judgments]
+    D -.->|Feed Back|C
+    D ==> E[Results]
+    
+    style B fill:#f9f,stroke:#333
+    style C fill:#bbf,stroke:#333
+    style D fill:#bbf,stroke:#333
 ```
 
 ## Features
@@ -36,17 +41,17 @@ flowchart TD
 
 ### Architecture
 
-This tool uses concurrent execution to efficiently evaluate LLM responses:
+This tool uses thread-based concurrency to efficiently evaluate LLM responses:
 
-1. **Initial Responses**: All models answer the question in parallel
-2. **Cross-Evaluation**: Each response is then judged by all other models in parallel
+1. **Initial Responses**: All models answer the question concurrently using a thread pool
+2. **Cross-Evaluation**: Each response is then judged by all other models concurrently
 3. **Result Aggregation**: All responses and judgments are collected and displayed
 
 ### Execution Flow
 
 For a panel of N models, the tool will:
-1. Make N parallel API calls to get initial answers
-2. For each answer, make (N-1) parallel API calls to get judgments
+1. Make N concurrent API calls to get initial answers using ThreadPoolExecutor
+2. For each answer, make (N-1) concurrent API calls to get judgments
 3. Total API calls = N + N*(N-1) = N^2
 
 For example, with 7 default models:
