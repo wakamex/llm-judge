@@ -17,6 +17,9 @@ dependencies = [
     "asyncio"
 ]
 
+[tool.setuptools]
+packages = ["llm_judge"]
+
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
