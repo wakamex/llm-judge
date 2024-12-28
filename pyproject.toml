@@ -1,6 +1,6 @@
 [project]
 name = "llm-judge"
-version = "0.1"
+version = "0.1.0"
 description = "llm's judge each other"
 readme = "README.md"
 authors = [{name = "Mihai Cosma"}]
@@ -13,8 +13,7 @@ dependencies = [
     "click",
     "llm",
     "sqlite-utils",
-    "tabulate",
-    "asyncio"
+    "tabulate"
 ]
 
 [tool.setuptools]

@@ -1,8 +1,13 @@
 # LLM Judge
 
+[![PyPI](https://img.shields.io/pypi/v/llm-judge.svg)](https://pypi.org/project/llm-judge/)
+[![Changelog](https://img.shields.io/github/v/release/wakamex/llm-judge?include_prereleases&label=changelog)](https://github.com/wakamex/llm-judge/releases)
+[![Tests](https://github.com/wakamex/llm-judge/workflows/Test/badge.svg)](https://github.com/wakamex/llm-judge/actions?query=workflow%3ATest)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/wakamex/llm-judge/blob/main/LICENSE)
+
 A tool for comparing responses from different LLM models. Each model judges the responses from other models, providing scores and explanations.
 
-A plugin for [LLM](https://llm.datasette.io/) inspired by [llm-consortium](https://github.com/irthomasthomas/llm-consortium).
+A plugin for [LLM](https://llm.datasette.io/) inspired by [llm-consortium](https://github.com/irthomasthomas/llm-consortium) and [Chinese propaganda](https://x.com/mihai673/status/1872881558669148326).
 
 ## Features
 
@@ -17,7 +22,7 @@ A plugin for [LLM](https://llm.datasette.io/) inspired by [llm-consortium](https
 Install this plugin in the same environment as [LLM](https://llm.datasette.io/).
 
 ```bash
-pip install llm-judge
+llm install llm-judge
 ```
 
 ## Usage
@@ -87,6 +92,7 @@ This will use the following default models:
 - GPT-4o (OpenAI's latest flagship via OpenRouter)
 - Claude 3.5 Sonnet (Anthropic's best)
 - Gemini 1.5 Pro (Google's best production model (not rate-limited))
+- Gemma 2 27B (Google's best open source model)
 - Hermes 3 405B (Nous Research's largest open source model)
 - Grok 2 (X.AI's latest model)
 - Mistral Large (Mistral AI's strongest model)
@@ -118,7 +124,7 @@ source venv/bin/activate
 ```
 Now install the dependencies and test dependencies:
 ```bash
-pip install -e '.[test]'
+llm install -e '.[test]'
 ```
 To run the tests:
 ```bash
