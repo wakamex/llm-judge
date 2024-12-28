@@ -1,5 +1,5 @@
 [project]
-name = "llm-judge"
+name = "llm-judger"
 version = "0.1.0"
 description = "llm's judge each other"
 readme = "README.md"
