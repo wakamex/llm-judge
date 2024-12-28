@@ -89,8 +89,9 @@ This will use the following default models:
 - Gemini 1.5 Pro (Google's best production model (not rate-limited))
 - Hermes 3 405B (Nous Research's largest open source model)
 - Grok 2 (X.AI's latest model)
-- DeepSeek Chat (DeepSeek's flagship model)
 - Mistral Large (Mistral AI's strongest model)
+- Qwen 2.5 72B Instruct (Qwen's latest model)
+- DeepSeek Chat (DeepSeek's flagship model)
 
 ### Error Handling
 

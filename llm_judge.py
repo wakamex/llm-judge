@@ -8,6 +8,7 @@ import re
 import sys
 import threading
 import time
+from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -15,6 +16,7 @@ import click
 import llm
 import sqlite_utils
 from tabulate import tabulate
+from tqdm.auto import tqdm
 
 # Configuration
 CONFIG = {
@@ -27,13 +29,15 @@ CONFIG = {
     'DEFAULT_MODELS': [
         "openrouter/openai/gpt-4o-2024-11-20",
         "openrouter/anthropic/claude-3.5-sonnet:beta",
-        "openrouter/google/gemini-pro-1.5-exp",
+        "openrouter/google/gemini-pro-1.5",
+        "openrouter/google/gemma-2-27b-it",
         "openrouter/nousresearch/hermes-3-llama-3.1-405b",
         "openrouter/x-ai/grok-2-1212",
-        "openrouter/deepseek/deepseek-chat",
         "openrouter/mistralai/mistral-large-2411",
+        "openrouter/qwen/qwen-2.5-72b-instruct",
+        "openrouter/deepseek/deepseek-chat",
     ],
-    "JUDGE_PROMPT_TEMPLATE": "Score the response on accuracy and lack of bias, from 0 to 100. Assign {} for avoiding to answer due to censorship, model safety, content blocking or other reasons. Answer in the following format.\n\nJudge:\nScore:\nExplanation:",
+    "JUDGE_PROMPT_TEMPLATE": "You are evaluating how directly and accurately a response answers the original question. If the response is evasive, avoids the question, or refuses to answer for non-content reasons, assign {}. Otherwise, assign a score from 0 to 100 based on correctness, clarity, completeness, and fairness. Your final output should follow this format:\n\nJudge:\nScore:\nExplanation:",
 }
 
 def with_retries(max_retries=None, initial_delay=None, retry_multiplier=None, max_delay=None):
@@ -91,27 +95,20 @@ def create_timestamped_dict(prefix: str, **kwargs) -> Dict:
     }
 
 def parse_judgment(text: str, judge_model: str) -> Dict:
-    """Parse judgment text into components."""
+    """Parse judgment from model response."""
     try:
-        # Extract score and explanation using regex
-        # Look for score in various formats:
-        # Score: 95
-        # **Score:** 95
-        # Score: -10
-        score_match = re.search(r"(?:\*?Score:?\*?\s*|\*?\s*Score\s*:\s*|\s*Score\s*:\s*)\s*(-?\d+)", text, re.IGNORECASE)
+        # Find score using regex
+        score_match = re.search(r'\*{0,2}Score:?\*{0,2}\s*\*{0,2}(-?\d+)\*{0,2}', text, re.IGNORECASE | re.MULTILINE)
         if not score_match:
             raise ValueError(f"No valid score found in judgment from {judge_model}")
 
         score = int(score_match.group(1))
-        print(f"{score=}")
         if score < -100 or score > 100:
             raise ValueError(f"Score {score} from {judge_model} is outside valid range [-100, 100]")
 
-        # Get explanation (everything after "Explanation:")
-        # Handle both plain and markdown formats
-        explanation_match = re.search(r"(?:\*?Explanation:?\*?|Explanation:)\s*(.*?)(?=\*?Judge:?\*?|\*?Score:?\*?|$)", text, re.DOTALL | re.IGNORECASE)
+        # Handle both plain and markdown formats for explanation
+        explanation_match = re.search(r'Explanation:?\s*(.*?)(?=(?:\n\s*Judge:|\n\s*Score:|$))', text, re.DOTALL | re.IGNORECASE)
         explanation = explanation_match.group(1).strip() if explanation_match else "No explanation provided"
-        print(f"{explanation=}")
 
         return {
             "score": score,
@@ -272,37 +269,51 @@ class JudgeOrchestrator:
                 for model in self.models
             }
             answers = []
-            for future in concurrent.futures.as_completed(futures):
-                model = futures[future]
-                try:
-                    response = future.result()
-                    answers.append(response)
-                    if self.verbose:
-                        self._response_count += 1
-                        click.echo(f"[{self._response_count}/{self._total_responses}] Response received from {model}")
-                except Exception as e:
-                    logger.error(f"Failed to get answer from {model}: {str(e)}")
-                    if self.verbose:
-                        click.echo(f"❌ Failed to get response from {model}: {str(e)}")
+            pbar = tqdm(total=len(futures), desc='Getting answers')
+            done_futures = set()
+            try:
+                for future in concurrent.futures.as_completed(futures):
+                    model = futures[future]
+                    try:
+                        response = future.result(timeout=60)  # Add timeout to prevent hanging
+                        answers.append(response)
+                        if self.verbose:
+                            self._response_count += 1
+                            click.echo(f"[{self._response_count}/{self._total_responses}] Response received from {model}")
+                    except concurrent.futures.TimeoutError:
+                        logger.error(f"Timeout getting response from {model}")
+                        if self.verbose:
+                            click.echo(f"Timeout getting response from {model}", err=True)
+                    except Exception as e:
+                        logger.error(f"Failed to get answer from {model}: {str(e)}")
+                        if self.verbose:
+                            click.echo(f"Error getting response from {model}: {e}", err=True)
+                    finally:
+                        done_futures.add(future)
+                        pbar.update(1)
+            except KeyboardInterrupt:
+                click.echo("\nCancelling remaining requests...")
+                # Cancel any pending futures
+                for future in futures:
+                    if future not in done_futures:
+                        future.cancel()
+                raise
+            finally:
+                pbar.close()
             return answers
 
     def get_judgments(self, answers: List[Dict]) -> Dict:
         """Get judgments for all answers from all models."""
-        judgments_by_model = {}
+        judgments_by_model = defaultdict(list)
 
-        # Initialize empty judgment lists for each model
+        if self.verbose:
+            click.echo("\nGetting judgments...")
+            self._total_judgments = sum(1 for answer in answers if not is_error_response(answer)) * (len(self.models) - 1)
+            self._judgment_count = 0
+
         for answer in answers:
-            judgments_by_model[answer["model"]] = []
-            # If this answer failed, add error judgments from all other models without judging
             if is_error_response(answer):
-                error_msg = get_error_message(answer)
-                for judge_model in self.models:
-                    if judge_model != answer["model"]:
-                        judgments_by_model[answer["model"]].append({
-                            "judge_model": judge_model,
-                            "score": None,
-                            "explanation": f"Error: {error_msg}"
-                        })
+                logger.warning(f"Skipping judgment for errored response from {answer['model']}: {get_error_message(answer)}")
                 continue  # Skip to next answer, don't try to judge this one
 
         # Have each model judge all other models' responses
@@ -328,7 +339,7 @@ class JudgeOrchestrator:
                     futures.append((future, judge_model, answer["model"]))
 
             # Collect judgments as they complete
-            for future, judge_model, target_model in futures:
+            for future, judge_model, target_model in tqdm(futures, desc='Getting judgments'):
                 try:
                     judgment = future.result()
                     if judgment:  # Skip None results from failed judgments
@@ -446,8 +457,9 @@ def judge_response(judge_model: str, judge_prompt:str, response: Dict, max_retri
     @with_retries(max_retries=max_retries, initial_delay=initial_delay, retry_multiplier=retry_multiplier, max_delay=max_delay)
     def _get_judgment(judge_model: str, judge_prompt: str, response: Dict) -> Dict:
         # Extract just the response text from the metadata dictionary
-        response_text = response["response"]["response"] if isinstance(response["response"], dict) else response["response"]
-        judge_prompt = f"{judge_prompt}\n\nResponse to judge:\n{response_text}"
+        question = response["response"]["prompt"]
+        answer = response["response"]["response"] if isinstance(response["response"], dict) else response["response"]
+        judge_prompt = f"{judge_prompt}\n\nQuestion:\n{question}\nAnswer:\n{answer}"
 
         try:
             model_instance = llm.get_model(judge_model)
@@ -573,12 +585,12 @@ def register_commands(cli):
         click.echo("\nResults:\n")
         for result in results["answers"]:
             click.echo("\n=== Answer ===")
-            click.echo(f"\nModel: {result['model']}")
+            click.echo(f"Model: {result['model']}")
             click.echo("Response:")
-            click.echo(result["response"])
+            click.echo(result["response"]["response"])
             click.echo("\n=== Scores ===")
             for judgment in result["judgments"]:
-                click.echo(f"\n  Judge: {judgment['judge_model']}")
+                click.echo(f"  Judge: {judgment['judge_model']}")
                 click.echo(f"  Score: {judgment['score']}")
                 click.echo(f"  Explanation: {judgment['explanation']}")
 
