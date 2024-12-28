@@ -1,6 +1,6 @@
 # LLM Judge
 
-[![PyPI](https://img.shields.io/pypi/v/llm-judge.svg)](https://pypi.org/project/llm-judge/)
+[![PyPI](https://img.shields.io/pypi/v/llm-judger.svg)](https://pypi.org/project/llm-judger/)
 [![Changelog](https://img.shields.io/github/v/release/wakamex/llm-judge?include_prereleases&label=changelog)](https://github.com/wakamex/llm-judge/releases)
 [![Tests](https://github.com/wakamex/llm-judge/workflows/Test/badge.svg)](https://github.com/wakamex/llm-judge/actions?query=workflow%3ATest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/wakamex/llm-judge/blob/main/LICENSE)
@@ -22,7 +22,7 @@ A plugin for [LLM](https://llm.datasette.io/) inspired by [llm-consortium](https
 Install this plugin in the same environment as [LLM](https://llm.datasette.io/).
 
 ```bash
-llm install llm-judge
+llm install llm-judger
 ```
 
 ## Usage
