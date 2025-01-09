@@ -262,6 +262,7 @@ class JudgeOrchestrator:
         if self.verbose:
             click.echo("\nGetting responses from models...")
 
+        db = DatabaseConnection.get_connection()
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
                 executor.submit(get_answer, model, prompt,
@@ -276,6 +277,14 @@ class JudgeOrchestrator:
                     model = futures[future]
                     try:
                         response = future.result(timeout=60)  # Add timeout to prevent hanging
+                        # Save response to database
+                        response_data = create_timestamped_dict("response",
+                            model=model,
+                            prompt=prompt,
+                            response=response["response"] if not is_error_response(response) else get_error_message(response)
+                        )
+                        db["responses"].insert(response_data)
+                        response["id"] = response_data["id"]  # Store DB ID for later use
                         answers.append(response)
                         if self.verbose:
                             self._response_count += 1
@@ -305,6 +314,7 @@ class JudgeOrchestrator:
     def get_judgments(self, answers: List[Dict]) -> Dict:
         """Get judgments for all answers from all models."""
         judgments_by_model = defaultdict(list)
+        db = DatabaseConnection.get_connection()
 
         if self.verbose:
             click.echo("\nGetting judgments...")
@@ -336,22 +346,30 @@ class JudgeOrchestrator:
                         retry_multiplier=self.retry_multiplier,
                         max_delay=self.max_delay
                     )
-                    futures.append((future, judge_model, answer["model"]))
+                    futures.append((future, judge_model, answer))
 
             # Collect judgments as they complete
-            for future, judge_model, target_model in tqdm(futures, desc='Getting judgments'):
+            for future, judge_model, answer in tqdm(futures, desc='Getting judgments'):
                 try:
                     judgment = future.result()
                     if judgment:  # Skip None results from failed judgments
                         judgment["judge_model"] = judge_model  # Add judge model to judgment
-                        judgments_by_model[target_model].append(judgment)
+                        # Save judgment to database
+                        judgment_data = create_timestamped_dict("judgment",
+                            response_id=answer["id"],
+                            judge_model=judge_model,
+                            score=judgment["score"],
+                            explanation=judgment["explanation"]
+                        )
+                        db["judgments"].insert(judgment_data)
+                        judgments_by_model[answer["model"]].append(judgment)
                         if self.verbose:
                             self._judgment_count += 1
                             logger.info(f"[{self._judgment_count}/{self._total_judgments}] Judgment received from {judge_model}")
                 except Exception as e:
-                    logger.error(f"Failed to get judgment from {judge_model} for {target_model}: {str(e)}")
+                    logger.error(f"Failed to get judgment from {judge_model} for {answer['model']}: {str(e)}")
                     # Add a failed judgment record
-                    judgments_by_model[target_model].append({
+                    judgments_by_model[answer["model"]].append({
                         "judge_model": judge_model,
                         "score": None,
                         "explanation": f"Error: {str(e)}"
